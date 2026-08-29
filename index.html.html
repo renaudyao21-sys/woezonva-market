@@ -3635,8 +3635,23 @@ var qrcode = function() {
       '<div class="price-line total"><span>Total à payer</span><span>' + fmt(total) + '</span></div>';
 
     var escrowNote = isCash
-      ? '<div class="escrow-banner">💵 Tu payes le montant total (produit + frais de service) directement au livreur à la réception de ta commande.</div>'
+      ? '<div class="escrow-banner">💵 Tu payes le prix du produit (' + fmt(subtotal) + ') en espèces au livreur à la réception. Les frais de service (' + fmt(fee) + ') se règlent maintenant par mobile money.</div>'
       : '<div class="escrow-banner">🔒 Paiement sécurisé — les fonds sont bloqués et reversés au vendeur seulement après confirmation croisée de la livraison (code remis au vendeur à la réception).</div>';
+
+    var feeNetworkHtml = "";
+    if (isCash) {
+      var feeNet = state.cashFeeNetwork || "flooz";
+      feeNetworkHtml = '' +
+        '<div class="field-label">Payer les frais de service (' + fmt(fee) + ') maintenant via</div>' +
+        '<div class="pay-grid">' +
+          '<div class="pay-option ' + (feeNet === "flooz" ? "selected" : "") + '" data-action="set-cash-fee-network" data-pay="flooz">' +
+            '<div class="pay-icon">📱</div><div><div class="pay-label">Flooz</div><div class="pay-sub">Mobile Money Moov Africa</div></div>' +
+          '</div>' +
+          '<div class="pay-option ' + (feeNet === "tmoney" ? "selected" : "") + '" data-action="set-cash-fee-network" data-pay="tmoney">' +
+            '<div class="pay-icon">📲</div><div><div class="pay-label">TMoney</div><div class="pay-sub">Mobile Money Togocom</div></div>' +
+          '</div>' +
+        '</div>';
+    }
 
     return '' +
     '<div class="section" style="max-width:560px">' +
@@ -3653,6 +3668,7 @@ var qrcode = function() {
         '<div class="field-label">Choisir le mode de paiement</div>' +
         payHtml +
         priceBreakdown +
+        feeNetworkHtml +
         escrowNote +
         '<button class="primary-btn" data-action="confirm-order">🔒 Confirmer et payer · ' + fmt(total) + '</button>' +
       '</div>' +
@@ -4520,6 +4536,21 @@ var qrcode = function() {
       '</div>';
     }).join("") + '</div>';
 
+    var enrollFeeNetworkHtml = "";
+    if (isCash) {
+      var enrollFeeNet = state.cashFeeNetwork || "flooz";
+      enrollFeeNetworkHtml = '' +
+        '<div class="field-label">Payer les frais de service (' + fmt(fee) + ') maintenant via</div>' +
+        '<div class="pay-grid">' +
+          '<div class="pay-option ' + (enrollFeeNet === "flooz" ? "selected" : "") + '" data-action="set-cash-fee-network" data-pay="flooz">' +
+            '<div class="pay-icon">📱</div><div class="pay-label">Flooz</div>' +
+          '</div>' +
+          '<div class="pay-option ' + (enrollFeeNet === "tmoney" ? "selected" : "") + '" data-action="set-cash-fee-network" data-pay="tmoney">' +
+            '<div class="pay-icon">📲</div><div class="pay-label">TMoney</div>' +
+          '</div>' +
+        '</div>';
+    }
+
     return '' +
     '<div class="overlay" data-action="close-enroll-overlay">' +
       '<div class="drawer" onclick="event.stopPropagation()">' +
@@ -4536,8 +4567,9 @@ var qrcode = function() {
         payHtml +
         '<div class="price-line"><span>Frais de service (2%)</span><span>' + fmt(fee) + '</span></div>' +
         '<div class="price-line total"><span>Total à payer</span><span>' + fmt(total) + '</span></div>' +
+        enrollFeeNetworkHtml +
         (isCash
-          ? '<div class="escrow-banner">💵 Tu payes directement le formateur au premier cours.</div>'
+          ? '<div class="escrow-banner">💵 Tu payes le prix de la formation (' + fmt(price) + ') directement au formateur. Les frais de service (' + fmt(fee) + ') se règlent maintenant par mobile money.</div>'
           : '<div class="escrow-banner">🔒 Paiement sécurisé — les fonds sont bloqués jusqu\'à confirmation du début de la formation.</div>') +
         '<button class="primary-btn" data-action="submit-enroll">Confirmer mon inscription · ' + fmt(total) + '</button>' +
       '</div>' +
@@ -4788,6 +4820,7 @@ var qrcode = function() {
         else if (action === "goto-checkout") { state.cartOpen = false; state.view = { screen: "checkout" }; render(); }
         else if (action === "back-to-cart") { state.view = { screen: "home" }; state.cartOpen = true; render(); }
         else if (action === "set-pay") { state.payMethod = el.getAttribute("data-pay"); render(); }
+        else if (action === "set-cash-fee-network") { state.cashFeeNetwork = el.getAttribute("data-pay"); render(); }
         else if (action === "confirm-order") { doConfirmOrder(); }
         else if (action === "dash-tab") { state.dashTab = el.getAttribute("data-tab"); render(); }
         else if (action === "add-product") { doAddProduct(); }
@@ -4890,9 +4923,9 @@ var qrcode = function() {
   // Lance un vrai paiement Flooz/TMoney via la fonction serveur
   // "initiate-payment" (qui elle seule connaît la clé PayGate).
   // Retourne une promesse résolue avec la réponse de PayGate.
-  function triggerPayGatePayment(identifier, phone, amount, description, network, table) {
+  function triggerPayGatePayment(identifier, phone, amount, description, network, table, kind) {
     return supabaseClient.functions.invoke("initiate-payment", {
-      body: { identifier: identifier, phone: phone, amount: amount, description: description, network: network, table: table }
+      body: { identifier: identifier, phone: phone, amount: amount, description: description, network: network, table: table, kind: kind || "full" }
     }).then(function (res) {
       if (res.error) throw res.error;
       return res.data;
@@ -4922,6 +4955,7 @@ var qrcode = function() {
       client_name: name.trim(), client_phone: phone.trim(), address: address.trim(),
       pay_method: payMethod, subtotal: subtotal, fee: fee, total: total,
       payment_status: isCash ? "a_la_livraison" : "en_attente",
+      fee_payment_status: isCash ? "en_attente" : null,
       delivery_code: isCash ? null : generateDeliveryCode(),
       status: "attente"
     };
@@ -4952,7 +4986,20 @@ var qrcode = function() {
       state.view = { screen: "confirmation", order: order };
       render();
 
-      if (isCash) return;
+      if (isCash) {
+        var feeNetwork = state.cashFeeNetwork || "flooz";
+        triggerPayGatePayment("fee-" + orderId, phone.trim(), fee, "Frais de service Woezon " + orderId, feeNetwork, "order", "fee").then(function (payData) {
+          if (String(payData.status) === "0") {
+            showToast("📱 Vérifie ton téléphone pour valider les frais de service " + feeNetwork.toUpperCase());
+          } else {
+            showToast("Erreur lors du paiement des frais de service");
+          }
+        }).catch(function (e) {
+          console.error(e);
+          showToast("Erreur lors du paiement des frais de service");
+        });
+        return;
+      }
       // Déclenche la vraie notification de paiement Flooz/TMoney
       triggerPayGatePayment(orderId, phone.trim(), total, "Commande Woezon " + orderId, payMethod, "order").then(function (payData) {
         if (String(payData.status) === "0") {
@@ -5290,6 +5337,7 @@ var qrcode = function() {
       id: enrollmentId, course_id: state.enrollCourseId, client_id: state.currentClientAccountId,
       client_name: name.trim(), client_phone: phone.trim(),
       pay_method: payMethod, payment_status: isCash ? "a_la_livraison" : "en_attente",
+      fee_payment_status: isCash ? "en_attente" : null,
       enroll_code: isCash ? null : generateDeliveryCode(),
       price: price, fee: fee, total: price + fee
     };
@@ -5311,7 +5359,20 @@ var qrcode = function() {
       showToast("Inscription confirmée !");
       render();
 
-      if (isCash) return;
+      if (isCash) {
+        var enrollFeeNetwork = state.cashFeeNetwork || "flooz";
+        triggerPayGatePayment("fee-" + enrollmentId, phone.trim(), fee, "Frais de service Woezon " + enrollmentId, enrollFeeNetwork, "enrollment", "fee").then(function (payData) {
+          if (String(payData.status) === "0") {
+            showToast("📱 Vérifie ton téléphone pour valider les frais de service " + enrollFeeNetwork.toUpperCase());
+          } else {
+            showToast("Erreur lors du paiement des frais de service");
+          }
+        }).catch(function (e) {
+          console.error(e);
+          showToast("Erreur lors du paiement des frais de service");
+        });
+        return;
+      }
       triggerPayGatePayment(enrollmentId, phone.trim(), price + fee, "Formation Woezon " + enrollmentId, payMethod, "enrollment").then(function (payData) {
         if (String(payData.status) === "0") {
           showToast("📱 Vérifie ton téléphone pour valider le paiement " + payMethod.toUpperCase());
