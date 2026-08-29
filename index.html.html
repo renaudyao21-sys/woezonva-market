@@ -3080,7 +3080,7 @@ var qrcode = function() {
   var TRAINING_DOMAINS = [
     "Informatique & Digital", "Langues", "Business & Entrepreneuriat", "Artisanat & Métiers manuels",
     "Beauté & Bien-être", "Musique & Arts", "Agriculture & Élevage", "Cuisine & Pâtisserie",
-    "Couture & Mode", "Soutien scolaire"
+    "Couture & Mode", "Soutien scolaire", "Tricotage & Crochet", "Auto-école", "Décoration"
   ];
 
   var SEED_TRAINERS = [
@@ -4104,7 +4104,7 @@ var qrcode = function() {
     '</div>';
   }
 
-  var VEHICLES = ["Moto", "Vélo", "À pied", "Voiture", "Tricycle"];
+  var VEHICLES = ["Moto", "Vélo", "Voiture", "Tricycle"];
 
   var TOGO_MARKETS = [
     { region: "Région Maritime", markets: [
@@ -4532,9 +4532,10 @@ var qrcode = function() {
   function renderEnrollModal() {
     var course = state.enrollCourseId ? state.data.courses.filter(function (c) { return c.id === state.enrollCourseId; })[0] : null;
     var price = course ? course.price : 0;
+    var isFree = price === 0;
     var pay = state.enrollPayMethod || "flooz";
     var isCash = pay === "cash";
-    var fee = Math.round(price * 0.02);
+    var fee = isFree ? 0 : Math.round(price * 0.02);
     var total = price + fee;
     var payOptions = [
       { id: "flooz", icon: "📱", label: "Flooz" },
@@ -4551,7 +4552,7 @@ var qrcode = function() {
     }).join("") + '</div>';
 
     var enrollFeeNetworkHtml = "";
-    if (isCash) {
+    if (isCash && !isFree) {
       var enrollFeeNet = state.cashFeeNetwork || "flooz";
       enrollFeeNetworkHtml = '' +
         '<div class="field-label">Payer les frais de service (' + fmt(fee) + ') maintenant via</div>' +
@@ -4572,20 +4573,23 @@ var qrcode = function() {
           '<div class="drawer-title" style="font-size:18px">S\'inscrire</div>' +
           '<button class="icon-btn" data-action="close-enroll">✕</button>' +
         '</div>' +
-        '<div class="section-sub" style="margin-bottom:14px">' + (course ? escapeHtml(course.title) : "") + ' · ' + fmt(price) + '</div>' +
+        '<div class="section-sub" style="margin-bottom:14px">' + (course ? escapeHtml(course.title) : "") + ' · ' + (isFree ? "Gratuit 🎉" : fmt(price)) + '</div>' +
         '<div class="field-label">Ton nom</div>' +
         '<input class="field-input" id="en-name" placeholder="Ex. Ama Koffi" value="' + escapeHtml(state.chatClientName || "") + '">' +
         '<div class="field-label">Téléphone</div>' +
         '<input class="field-input" id="en-phone" placeholder="Ex. 90 00 00 00" value="' + escapeHtml(state.chatClientPhone || "") + '">' +
-        '<div class="field-label">Mode de paiement</div>' +
-        payHtml +
-        '<div class="price-line"><span>Frais de service (2%)</span><span>' + fmt(fee) + '</span></div>' +
-        '<div class="price-line total"><span>Total à payer</span><span>' + fmt(total) + '</span></div>' +
-        enrollFeeNetworkHtml +
-        (isCash
-          ? '<div class="escrow-banner">💵 Tu payes le prix de la formation (' + fmt(price) + ') directement au formateur. Les frais de service (' + fmt(fee) + ') se règlent maintenant par mobile money.</div>'
-          : '<div class="escrow-banner">🔒 Paiement sécurisé — les fonds sont bloqués jusqu\'à confirmation du début de la formation.</div>') +
-        '<button class="primary-btn" data-action="submit-enroll">Confirmer mon inscription · ' + fmt(total) + '</button>' +
+        (isFree ? '' :
+          '<div class="field-label">Mode de paiement</div>' +
+          payHtml +
+          '<div class="price-line"><span>Frais de service (2%)</span><span>' + fmt(fee) + '</span></div>' +
+          '<div class="price-line total"><span>Total à payer</span><span>' + fmt(total) + '</span></div>' +
+          enrollFeeNetworkHtml +
+          (isCash
+            ? '<div class="escrow-banner">💵 Tu payes le prix de la formation (' + fmt(price) + ') directement au formateur. Les frais de service (' + fmt(fee) + ') se règlent maintenant par mobile money.</div>'
+            : '<div class="escrow-banner">🔒 Paiement sécurisé — les fonds sont bloqués jusqu\'à confirmation du début de la formation.</div>')
+        ) +
+        (isFree ? '<div class="escrow-banner">🎉 Cette formation est gratuite — aucun paiement requis, ton inscription est immédiate.</div>' : '') +
+        '<button class="primary-btn" data-action="submit-enroll">' + (isFree ? "Confirmer mon inscription gratuite" : "Confirmer mon inscription · " + fmt(total)) + '</button>' +
       '</div>' +
     '</div>';
   }
@@ -5343,16 +5347,17 @@ var qrcode = function() {
     if (!supabaseClient) { showToast("Connexion au serveur indisponible — réessaie plus tard"); return; }
     var course = state.data.courses.filter(function (c) { return c.id === state.enrollCourseId; })[0];
     var price = course ? course.price : 0;
-    var payMethod = state.enrollPayMethod || "flooz";
+    var isFree = price === 0;
+    var payMethod = isFree ? "gratuit" : (state.enrollPayMethod || "flooz");
     var isCash = payMethod === "cash";
-    var fee = Math.round(price * 0.02);
+    var fee = isFree ? 0 : Math.round(price * 0.02);
     var enrollmentId = "en" + Date.now();
     var enrollRow = {
       id: enrollmentId, course_id: state.enrollCourseId, client_id: state.currentClientAccountId,
       client_name: name.trim(), client_phone: phone.trim(),
-      pay_method: payMethod, payment_status: isCash ? "a_la_livraison" : "en_attente",
-      fee_payment_status: isCash ? "en_attente" : null,
-      enroll_code: isCash ? null : generateDeliveryCode(),
+      pay_method: payMethod, payment_status: isFree ? "gratuit" : (isCash ? "a_la_livraison" : "en_attente"),
+      fee_payment_status: (!isFree && isCash) ? "en_attente" : null,
+      enroll_code: isFree ? generateDeliveryCode() : (isCash ? null : generateDeliveryCode()),
       price: price, fee: fee, total: price + fee
     };
     supabaseClient.from("enrollments").insert(enrollRow).then(function (res) {
@@ -5370,8 +5375,10 @@ var qrcode = function() {
       state.enrollOpen = false;
       state.enrollPayMethod = "flooz";
       state.formationTab = "mesformations";
-      showToast("Inscription confirmée !");
+      showToast(isFree ? "Inscription gratuite confirmée ! 🎉" : "Inscription confirmée !");
       render();
+
+      if (isFree) return;
 
       if (isCash) {
         var enrollFeeNetwork = state.cashFeeNetwork || "flooz";
