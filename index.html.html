@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Woezon — Marché en ligne</title>
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 170 170'%3E%3Crect width='170' height='170' rx='38' fill='%230F2A28'/%3E%3Cpath d='M35 64 L57 108 L74 72 L84 108 L94 72 L111 108 L133 64' fill='none' stroke='%23E8A33D' stroke-width='12' stroke-linecap='round' stroke-linejoin='round'/%3E%3Ccircle cx='123' cy='46' r='7' fill='%23D64545'/%3E%3C/svg%3E">
 <style>
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; }
@@ -41,6 +42,15 @@
     border-bottom: 1px solid rgba(243,239,227,0.1);
   }
   .logo {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    cursor: pointer;
+    white-space: nowrap;
+    border: none; background: none; color: var(--text-on-dark);
+  }
+  .logo-icon { flex-shrink: 0; }
+  .logo-word {
     font-family: 'Fraunces', Georgia, serif;
     font-weight: 700;
     font-size: 22px;
@@ -48,9 +58,6 @@
     display: flex;
     align-items: baseline;
     gap: 6px;
-    cursor: pointer;
-    white-space: nowrap;
-    border: none; background: none; color: var(--text-on-dark);
   }
   .logo .dot { color: var(--amber); }
   .search {
@@ -3288,7 +3295,14 @@ var qrcode = function() {
 
     return '' +
     '<div class="topbar">' +
-      '<button class="logo" data-action="go-home">Woezon<span class="dot">.</span></button>' +
+      '<button class="logo" data-action="go-home">' +
+        '<svg class="logo-icon" width="34" height="34" viewBox="0 0 170 170" xmlns="http://www.w3.org/2000/svg">' +
+          '<rect x="0" y="0" width="170" height="170" rx="38" fill="#0F2A28"/>' +
+          '<path d="M35 64 L57 108 L74 72 L84 108 L94 72 L111 108 L133 64" fill="none" stroke="#E8A33D" stroke-width="12" stroke-linecap="round" stroke-linejoin="round"/>' +
+          '<circle cx="123" cy="46" r="7" fill="#D64545"/>' +
+        '</svg>' +
+        '<span class="logo-word">Woezon<span class="dot">.</span></span>' +
+      '</button>' +
       '<div class="search">' +
         '<button class="search-icon-btn" data-action="do-search">🔎</button>' +
         '<input id="search-input" placeholder="Chercher…" value="' + escapeHtml(state.query) + '">' +
