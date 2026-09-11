@@ -161,6 +161,7 @@
   }
   .section-head { display: flex; align-items: baseline; justify-content: space-between; margin-bottom: 18px; }
   .section-title { font-family: 'Fraunces', Georgia, serif; font-size: 26px; color: var(--text-on-dark); font-weight: 600; }
+  .empty-state { padding: 30px; text-align: center; color: var(--text-on-dark); background: rgba(255,255,255,0.05); border-radius: 14px; }
   .section-sub { color: rgba(243,239,227,0.6); font-size: 14px; margin-top: 4px; }
 
   .hero { text-align: center; padding: 46px 20px 10px; }
@@ -471,8 +472,8 @@
     font-family: 'Fraunces', Georgia, serif; font-weight: 700; font-size: 24px; letter-spacing: 4px;
     color: var(--ink-dark); background: white; padding: 8px 16px; border-radius: 8px;
   }
-  .confirm-delivery-row { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
-  .confirm-delivery-row input { width: 110px; text-transform: uppercase; letter-spacing: 2px; text-align: center; font-weight: 700; }
+  .confirm-delivery-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 6px; }
+  .confirm-delivery-row input { width: 120px; min-width: 0; text-transform: uppercase; letter-spacing: 1px; text-align: center; font-weight: 700; font-size: 12.5px; }
   a { color: inherit; }
 </style>
 </head>
@@ -3016,11 +3017,110 @@ var qrcode = function() {
       });
     }).catch(function (e) { console.error("Erreur de connexion à Supabase (groupes) :", e); return null; });
   }
+
+  // Charge les commandes/inscriptions payées (hors espèces) dont
+  // le vendeur/formateur n'a pas encore été reversé manuellement.
+  // Réservé à l'admin (protégé par les règles de sécurité).
+  function loadPendingPayouts() {
+    if (!supabaseClient) return;
+    state.adminPayoutsLoading = true;
+    render();
+    Promise.all([
+      supabaseClient.from("orders").select("*").neq("pay_method", "cash").eq("payment_status", "libere").eq("payout_status", "a_verser"),
+      supabaseClient.from("enrollments").select("*").neq("pay_method", "cash").eq("payment_status", "libere").eq("payout_status", "a_verser"),
+      supabaseClient.from("vendors").select("id,name,phone"),
+      supabaseClient.from("trainers").select("id,name,phone"),
+      supabaseClient.from("order_items").select("order_id,vendor_id")
+    ]).then(function (results) {
+      state.adminPayoutsLoading = false;
+      if (results[0].error || results[1].error) {
+        console.error("Erreur de chargement des reversements :", results[0].error, results[1].error);
+        render();
+        return;
+      }
+      var vendorById = {};
+      (results[2].data || []).forEach(function (v) { vendorById[v.id] = v; });
+      var trainerById2 = {};
+      (results[3].data || []).forEach(function (t) { trainerById2[t.id] = t; });
+      var vendorIdByOrder = {};
+      (results[4].data || []).forEach(function (it) { vendorIdByOrder[it.order_id] = it.vendor_id; });
+
+      var orders = (results[0].data || []).map(function (o) {
+        var vendor = vendorById[vendorIdByOrder[o.id]];
+        return {
+          kind: "order", id: o.id, amount: o.subtotal,
+          recipientName: vendor ? vendor.name : "Vendeur inconnu",
+          recipientPhone: vendor ? vendor.phone : "—",
+          payMethod: o.pay_method, clientName: o.client_name, at: o.created_at
+        };
+      });
+      var enrollments = (results[1].data || []).map(function (e) {
+        var trainer = trainerById2[state.data.courses.filter(function (c) { return c.id === e.course_id; }).map(function (c) { return c.trainerId; })[0]];
+        return {
+          kind: "enrollment", id: e.id, amount: e.price,
+          recipientName: trainer ? trainer.name : "Formateur inconnu",
+          recipientPhone: trainer ? trainer.phone : "—",
+          payMethod: e.pay_method, clientName: e.client_name, at: e.created_at
+        };
+      });
+      state.adminPayouts = orders.concat(enrollments).sort(function (a, b) { return new Date(a.at) - new Date(b.at); });
+      render();
+    }).catch(function (e) {
+      state.adminPayoutsLoading = false;
+      console.error("Erreur de connexion (reversements) :", e);
+      render();
+    });
+  }
+
+  function doMarkPayoutDone(kind, id) {
+    if (!supabaseClient) return;
+    var tableName = kind === "order" ? "orders" : "enrollments";
+    supabaseClient.from(tableName).update({ payout_status: "verse" }).eq("id", id).then(function (res) {
+      if (res.error) { showToast("Erreur, réessaie"); return; }
+      state.adminPayouts = (state.adminPayouts || []).filter(function (p) { return !(p.kind === kind && p.id === id); });
+      showToast("Marqué comme reversé ✅");
+      render();
+    }).catch(function () { showToast("Erreur, réessaie"); });
+  }
+
+  function renderAdminPayouts() {
+    if (!state.isAdmin) {
+      return '<div class="section"><div class="section-title">Accès refusé</div></div>';
+    }
+    var payouts = state.adminPayouts || [];
+    var body;
+    if (state.adminPayoutsLoading) {
+      body = '<div class="section-sub">Chargement…</div>';
+    } else if (!payouts.length) {
+      body = '<div class="empty-state">✅ Rien en attente — tous les vendeurs/formateurs ont été reversés.</div>';
+    } else {
+      body = '<div style="overflow-x:auto"><table class="mytable"><thead><tr>' +
+        '<th>Destinataire</th><th>Téléphone</th><th>Montant à envoyer</th><th>Origine</th><th>Client</th><th></th>' +
+        '</tr></thead><tbody>' +
+        payouts.map(function (p) {
+          return '<tr>' +
+            '<td>' + escapeHtml(p.recipientName) + '</td>' +
+            '<td>' + escapeHtml(p.recipientPhone) + '</td>' +
+            '<td><strong>' + fmt(p.amount) + '</strong></td>' +
+            '<td>' + escapeHtml(p.payMethod.toUpperCase()) + ' · ' + (p.kind === "order" ? "Commande" : "Formation") + '</td>' +
+            '<td>' + escapeHtml(p.clientName) + '</td>' +
+            '<td><button class="secondary-btn" style="width:auto;padding:6px 12px;margin:0;font-size:12px" data-action="mark-payout-done" data-kind="' + p.kind + '" data-id="' + p.id + '">Marquer comme reversé</button></td>' +
+          '</tr>';
+        }).join("") +
+        '</tbody></table></div>';
+    }
+    return '' +
+    '<div class="section">' +
+      '<div class="section-title">🛠️ Reversements en attente</div>' +
+      '<div class="section-sub" style="margin-bottom:16px">Montants à envoyer manuellement aux vendeurs/formateurs via ton compte PayGate (module de remboursement), puis à cocher ici une fois fait.</div>' +
+      body +
+    '</div>';
+  }
   function fetchSupabaseAccount(userId) {
     return supabaseClient.from("profiles").select("*").eq("id", userId).single().then(function (res) {
       if (res.error || !res.data) throw new Error("Profil introuvable pour ce compte");
       var profile = res.data;
-      var account = { id: userId, role: profile.role, name: profile.name, phone: profile.phone };
+      var account = { id: userId, role: profile.role, name: profile.name, phone: profile.phone, isAdmin: !!profile.is_admin };
       if (profile.role === "vendeur") {
         return supabaseClient.from("vendors").select("id").eq("owner_id", userId).single().then(function (r) {
           if (r.data) account.vendorId = r.data.id;
@@ -3049,6 +3149,7 @@ var qrcode = function() {
       if (state.data.accounts[i].id === account.id) { idx = i; break; }
     }
     if (idx >= 0) state.data.accounts[idx] = account; else state.data.accounts.push(account);
+    state.isAdmin = !!account.isAdmin;
 
     if (account.role === "vendeur") { state.currentVendorAccountId = account.id; state.dashTab = "produits"; }
     else if (account.role === "livreur") { state.currentCourierId = account.courierId; state.livreurTab = "espace"; }
@@ -3255,6 +3356,8 @@ var qrcode = function() {
       html += renderFormations();
     } else if (state.mode === "marches") {
       html += renderMarches();
+    } else if (state.mode === "admin-payouts") {
+      html += renderAdminPayouts();
     } else {
       html += renderBuyerScreens();
     }
@@ -3281,6 +3384,9 @@ var qrcode = function() {
       { mode: "formations", label: "🎓 Formations" },
       { mode: "marches", label: "📍 Marchés" }
     ];
+    if (state.isAdmin) {
+      menuItems.push({ mode: "admin-payouts", label: "🛠️ Reversements (admin)" });
+    }
     var notifLabel = notifSupported() && Notification.permission === "granted" ? "🔔 Notifications activées" : "🔕 Activer les notifications";
     var menuHtml = state.menuOpen ? (
       '<div class="nav-menu">' +
@@ -4029,17 +4135,17 @@ var qrcode = function() {
       if (myProducts.length === 0) {
         body += '<div class="empty"><div class="display">Aucun produit publié</div>Ajoute ton premier article ci-dessus.</div>';
       } else {
-        body += '<table class="mytable"><thead><tr><th>Produit</th><th>Catégorie</th><th>Prix</th><th></th></tr></thead><tbody>' +
+        body += '<div style="overflow-x:auto"><table class="mytable"><thead><tr><th>Produit</th><th>Catégorie</th><th>Prix</th><th></th></tr></thead><tbody>' +
           myProducts.map(function (p) {
             return '<tr><td>' + p.icon + ' ' + escapeHtml(p.name) + '</td><td>' + escapeHtml(catLabel(p.category)) + '</td><td>' + fmt(p.price) + '</td>' +
               '<td><button class="row-del" data-action="remove-product" data-product="' + p.id + '">Retirer</button></td></tr>';
-          }).join("") + '</tbody></table>';
+          }).join("") + '</tbody></table></div>';
       }
     } else if (state.dashTab === "commandes") {
       if (myOrders.length === 0) {
         body += '<div class="empty"><div class="display">Aucune commande pour l\'instant</div>Les commandes des clients apparaîtront ici.</div>';
       } else {
-        body += '<table class="mytable"><thead><tr><th>Client</th><th>Articles</th><th>Montant</th><th>Paiement</th><th>Statut</th></tr></thead><tbody>' +
+        body += '<div style="overflow-x:auto"><table class="mytable"><thead><tr><th>Client</th><th>Articles</th><th>Montant</th><th>Paiement</th><th>Statut</th></tr></thead><tbody>' +
           myOrders.map(function (o) {
             var mine = o.items.filter(function (it) { return it.vendorId === VENDOR_ID; });
             var sub = mine.reduce(function (s, it) { return s + it.price * it.qty; }, 0);
@@ -4063,7 +4169,7 @@ var qrcode = function() {
                   '<option value="confirmee"' + (o.status === "confirmee" ? " selected" : "") + '>Confirmée</option>' +
                 '</select>' +
                 '<div class="confirm-delivery-row">' +
-                  '<input class="field-input" id="deliver-code-' + o.id + '" placeholder="Code client" maxlength="6">' +
+                  '<input class="field-input" id="deliver-code-' + o.id + '" placeholder="Code" maxlength="6">' +
                   '<button class="primary-btn" style="width:auto;padding:6px 12px;margin:0;font-size:11.5px" data-action="confirm-delivery" data-order="' + o.id + '">Valider</button>' +
                 '</div>' +
                 '<div style="font-size:11px;color:var(--text-muted);margin-top:4px">Demande le code (ou scanne le QR) au client à la remise du colis</div>';
@@ -4071,7 +4177,7 @@ var qrcode = function() {
             return '<tr><td>' + escapeHtml(o.name) + '<br><span style="color:var(--text-muted);font-size:12px">' + escapeHtml(o.phone) + '</span></td>' +
               '<td>' + escapeHtml(itemsTxt) + '</td><td>' + fmt(sub) + '</td><td>' + payLabel + '<br><span style="color:var(--text-muted);font-size:11.5px">' + fundsLabel + '</span></td>' +
               '<td>' + statusCell + '</td></tr>';
-          }).join("") + '</tbody></table>';
+          }).join("") + '</tbody></table></div>';
       }
     } else {
       if (myChats.length === 0) {
@@ -4184,20 +4290,20 @@ var qrcode = function() {
     if (pending.length === 0) {
       body += '<div class="empty"><div class="display">Aucune demande en attente</div>Reviens plus tard.</div>';
     } else {
-      body += '<table class="mytable"><thead><tr><th>Client</th><th>Trajet</th><th>Note</th><th></th></tr></thead><tbody>' +
+      body += '<div style="overflow-x:auto"><table class="mytable"><thead><tr><th>Client</th><th>Trajet</th><th>Note</th><th></th></tr></thead><tbody>' +
         pending.map(function (r) {
           return '<tr><td>' + escapeHtml(r.name) + '<br><span style="color:var(--text-muted);font-size:12px">' + escapeHtml(r.phone) + '</span></td>' +
             '<td>' + escapeHtml(r.pickup) + ' → ' + escapeHtml(r.dropoff) + '</td>' +
             '<td>' + escapeHtml(r.note || "—") + '</td>' +
             '<td><button class="primary-btn" style="width:auto;padding:7px 14px;margin:0;font-size:12.5px" data-action="accept-request" data-req="' + r.id + '">Accepter</button></td></tr>';
-        }).join("") + '</tbody></table>';
+        }).join("") + '</tbody></table></div>';
     }
 
     body += '<div class="section-title" style="font-size:19px;margin:24px 0 12px">Mes courses</div>';
     if (mine.length === 0) {
       body += '<div class="empty"><div class="display">Aucune course en cours</div>Accepte une demande ci-dessus pour commencer.</div>';
     } else {
-      body += '<table class="mytable"><thead><tr><th>Client</th><th>Trajet</th><th>Statut</th><th></th></tr></thead><tbody>' +
+      body += '<div style="overflow-x:auto"><table class="mytable"><thead><tr><th>Client</th><th>Trajet</th><th>Statut</th><th></th></tr></thead><tbody>' +
         mine.map(function (r) {
           var statusCls = r.status === "livree" ? "livree" : "confirmee";
           var statusLabel = r.status === "livree" ? "Livrée" : "En cours";
@@ -4205,7 +4311,7 @@ var qrcode = function() {
             '<td>' + escapeHtml(r.pickup) + ' → ' + escapeHtml(r.dropoff) + '</td>' +
             '<td><span class="status-pill ' + statusCls + '">' + statusLabel + '</span></td>' +
             '<td>' + (r.status !== "livree" ? '<button class="row-del" style="color:var(--jade)" data-action="mark-delivered" data-req="' + r.id + '">Marquer livrée</button>' : '') + '</td></tr>';
-        }).join("") + '</tbody></table>';
+        }).join("") + '</tbody></table></div>';
     }
 
     return body;
@@ -4257,14 +4363,14 @@ var qrcode = function() {
     if (myRequests.length === 0) {
       body += '<div class="empty"><div class="display">Aucune demande pour l\'instant</div>Envoie ta première demande ci-dessus.</div>';
     } else {
-      body += '<table class="mytable"><thead><tr><th>Client</th><th>Trajet</th><th>Statut</th></tr></thead><tbody>' +
+      body += '<div style="overflow-x:auto"><table class="mytable"><thead><tr><th>Client</th><th>Trajet</th><th>Statut</th></tr></thead><tbody>' +
         myRequests.slice().reverse().map(function (r) {
           var statusCls = r.status === "livree" ? "livree" : (r.status === "assignee" ? "confirmee" : "attente");
           var statusLabel = r.status === "livree" ? "Livrée" : (r.status === "assignee" ? "Livreur assigné" : "En attente");
           return '<tr><td>' + escapeHtml(r.name) + '<br><span style="color:var(--text-muted);font-size:12px">' + escapeHtml(r.phone) + '</span></td>' +
             '<td>' + escapeHtml(r.pickup) + ' → ' + escapeHtml(r.dropoff) + (r.courierName ? '<br><span style="color:var(--text-muted);font-size:12px">Souhaité : ' + escapeHtml(r.courierName) + '</span>' : '') + '</td>' +
             '<td><span class="status-pill ' + statusCls + '">' + statusLabel + '</span></td></tr>';
-        }).join("") + '</tbody></table>';
+        }).join("") + '</tbody></table></div>';
     }
     return body;
   }
@@ -4401,7 +4507,7 @@ var qrcode = function() {
     if (myCourses.length === 0) {
       body += '<div class="empty"><div class="display">Aucune formation publiée</div>Ajoute ta première formation ci-dessus.</div>';
     } else {
-      body += '<table class="mytable"><thead><tr><th>Titre</th><th>Domaine</th><th>Prix</th><th>Groupe</th><th></th></tr></thead><tbody>' +
+      body += '<div style="overflow-x:auto"><table class="mytable"><thead><tr><th>Titre</th><th>Domaine</th><th>Prix</th><th>Groupe</th><th></th></tr></thead><tbody>' +
         myCourses.map(function (c) {
           var g = groupForCourse(c.id);
           var groupCell = g
@@ -4410,7 +4516,7 @@ var qrcode = function() {
           return '<tr><td>' + escapeHtml(c.title) + '</td><td>' + escapeHtml(c.domain) + '</td><td>' + fmt(c.price) + '</td>' +
             '<td>' + groupCell + '</td>' +
             '<td><button class="row-del" data-action="remove-course" data-course="' + c.id + '">Retirer</button></td></tr>';
-        }).join("") + '</tbody></table>';
+        }).join("") + '</tbody></table></div>';
     }
 
     body += '<div class="section-title" style="font-size:19px;margin:24px 0 12px">Mes inscrits</div>';
@@ -4418,7 +4524,7 @@ var qrcode = function() {
       body += '<div class="empty"><div class="display">Aucune inscription pour l\'instant</div>Les inscrits à tes formations apparaîtront ici.</div>';
     } else {
       var payLabels2 = { flooz: "Flooz", tmoney: "TMoney", carte: "Carte", virement: "Virement", cash: "Espèces" };
-      body += '<table class="mytable"><thead><tr><th>Étudiant</th><th>Formation</th><th>Paiement</th><th>Confirmation</th></tr></thead><tbody>' +
+      body += '<div style="overflow-x:auto"><table class="mytable"><thead><tr><th>Étudiant</th><th>Formation</th><th>Paiement</th><th>Confirmation</th></tr></thead><tbody>' +
         myEnrollments.map(function (e) {
           var course = state.data.courses.filter(function (c) { return c.id === e.courseId; })[0];
           var payTxt = e.payMethod ? (payLabels2[e.payMethod] || e.payMethod) + " · " + fmt(e.total || 0) : "—";
@@ -4431,7 +4537,7 @@ var qrcode = function() {
           } else {
             confirmCell = '' +
               '<div class="confirm-delivery-row">' +
-                '<input class="field-input" id="enroll-code-' + e.id + '" placeholder="Code élève" maxlength="6">' +
+                '<input class="field-input" id="enroll-code-' + e.id + '" placeholder="Code" maxlength="6">' +
                 '<button class="primary-btn" style="width:auto;padding:6px 12px;margin:0;font-size:11.5px" data-action="confirm-enrollment" data-enroll="' + e.id + '">Valider</button>' +
               '</div>';
           }
@@ -4439,7 +4545,7 @@ var qrcode = function() {
             '<td>' + (course ? escapeHtml(course.title) : "—") + '</td>' +
             '<td>' + payTxt + '<br><span style="color:var(--text-muted);font-size:11.5px">' + fundsTxt + '</span></td>' +
             '<td>' + confirmCell + '</td></tr>';
-        }).join("") + '</tbody></table>';
+        }).join("") + '</tbody></table></div>';
     }
 
     var myTrainerChats = state.data.chats.filter(function (c) { return c.kind === "trainer" && c.trainerId === trainer.id; });
@@ -4832,6 +4938,10 @@ var qrcode = function() {
           else if (target === "livreurs") { state.mode = "livreurs"; state.view = { screen: "livreurs" }; }
           else if (target === "formations") { state.mode = "formations"; state.view = { screen: "formations" }; }
           else if (target === "marches") { state.mode = "marches"; state.view = { screen: "marches" }; }
+          else if (target === "admin-payouts") {
+            state.mode = "admin-payouts"; state.view = { screen: "admin-payouts" };
+            loadPendingPayouts();
+          }
           render();
         }
         else if (action === "qty") { updateQty(el.getAttribute("data-product"), parseInt(el.getAttribute("data-delta"), 10)); }
@@ -4840,6 +4950,7 @@ var qrcode = function() {
         else if (action === "set-pay") { state.payMethod = el.getAttribute("data-pay"); render(); }
         else if (action === "set-cash-fee-network") { state.cashFeeNetwork = el.getAttribute("data-pay"); render(); }
         else if (action === "confirm-order") { doConfirmOrder(); }
+        else if (action === "mark-payout-done") { doMarkPayoutDone(el.getAttribute("data-kind"), el.getAttribute("data-id")); }
         else if (action === "dash-tab") { state.dashTab = el.getAttribute("data-tab"); render(); }
         else if (action === "add-product") { doAddProduct(); }
         else if (action === "remove-product") { doRemoveProduct(el.getAttribute("data-product")); }
